@@ -22,9 +22,12 @@ use APP\facades\Repo;
 use APP\submission\Submission;
 use APP\template\TemplateManager;
 use PKP\core\PKPApplication;
+use PKP\db\DAORegistry;
+use PKP\galley\Galley;
 use PKP\plugins\GenericPlugin;
 use PKP\plugins\Hook;
 use PKP\i18n\LocaleConversion;
+use PKP\submission\GenreDAO;
 
 class GoogleScholarPlugin extends GenericPlugin
 {
@@ -264,28 +267,66 @@ class GoogleScholarPlugin extends GenericPlugin
         }
 
         // Galley links
-        $galleys = $publication->getData('galleys');
-        $galleyIndex = 0;
-        foreach ($galleys as $galley) {
+        //
+        // citation_pdf_url and citation_fulltext_html_url are single-valued in the
+        // Highwire tag set Google Scholar consumes, but a publication frequently
+        // carries more than one galley of a given type: a data set, a translated
+        // extended abstract, or a full text issued in a second language. Emitting
+        // one tag per galley left Scholar to guess which file is the version of
+        // record, so exactly one galley of each type is selected here.
+        //
+        // Selection rules, in order:
+        //   1. Galleys whose file uses a supplementary or dependent genre are
+        //      never eligible. Editors control this through the file's component.
+        //   2. Among the remaining galleys, one whose language matches the
+        //      publication locale wins, since that is the language the rest of the
+        //      citation_* metadata describes.
+        //   3. Otherwise the first eligible galley wins, i.e. the editor's galley
+        //      order decides.
+        /** @var GenreDAO $genreDao */
+        $genreDao = DAORegistry::getDAO('GenreDAO');
+        $contextId = $context?->getId();
+
+        $pdfGalley = null;
+        $htmlGalley = null;
+
+        foreach ((array) $publication->getData('galleys') as $galley) {
             $submissionFileId = $galley->getData('submissionFileId');
-            if ($submissionFileId && $submissionFile = Repo::submissionFile()->get($submissionFileId)) {
-                if ($submissionFile->getData('mimetype') == 'application/pdf') {
-                    $this->addMetaTag(
-                        $templateMgr,
-                        'googleScholarPdfUrl' . $galleyIndex,
-                        'citation_pdf_url',
-                        $request->getDispatcher()->url($request, PKPApplication::ROUTE_PAGE, null, $submissionPath, 'download', [$submissionBestId, $galley->getBestGalleyId()], urlLocaleForPage: '')
-                    );
-                } elseif ($submissionFile->getData('mimetype') == 'text/html') {
-                    $this->addMetaTag(
-                        $templateMgr,
-                        'googleScholarFulltextHtmlUrl' . $galleyIndex,
-                        'citation_fulltext_html_url',
-                        $request->getDispatcher()->url($request, PKPApplication::ROUTE_PAGE, null, $submissionPath, 'view', [$submissionBestId, $galley->getBestGalleyId()], urlLocaleForPage: '')
-                    );
-                }
+            if (!$submissionFileId || !($submissionFile = Repo::submissionFile()->get($submissionFileId))) {
+                continue;
             }
-            $galleyIndex++;
+
+            $genre = $genreDao->getById($submissionFile->getData('genreId'), $contextId);
+            if ($genre && ($genre->getSupplementary() || $genre->getDependent())) {
+                continue;
+            }
+
+            switch ($submissionFile->getData('mimetype')) {
+                case 'application/pdf':
+                    $pdfGalley = $this->preferGalley($pdfGalley, $galley, $publicationLocale);
+                    break;
+                case 'text/html':
+                    $htmlGalley = $this->preferGalley($htmlGalley, $galley, $publicationLocale);
+                    break;
+            }
+        }
+
+        if ($pdfGalley) {
+            $this->addMetaTag(
+                $templateMgr,
+                'googleScholarPdfUrl',
+                'citation_pdf_url',
+                $request->getDispatcher()->url($request, PKPApplication::ROUTE_PAGE, null, $submissionPath, 'download', [$submissionBestId, $pdfGalley->getBestGalleyId()], urlLocaleForPage: '')
+            );
+        }
+
+        if ($htmlGalley) {
+            $this->addMetaTag(
+                $templateMgr,
+                'googleScholarFulltextHtmlUrl',
+                'citation_fulltext_html_url',
+                $request->getDispatcher()->url($request, PKPApplication::ROUTE_PAGE, null, $submissionPath, 'view', [$submissionBestId, $htmlGalley->getBestGalleyId()], urlLocaleForPage: '')
+            );
         }
 
         // Citations
@@ -340,6 +381,35 @@ class GoogleScholarPlugin extends GenericPlugin
         }
 
         return $familyName . ', ' . $givenName;
+    }
+
+    /**
+     * Decide which of two galleys of the same type should be advertised to
+     * Google Scholar.
+     *
+     * The first eligible galley is kept unless a later one is in the language the
+     * publication's metadata describes, which makes the galley order set by the
+     * editor the tie-breaker for single-language publications and the publication
+     * locale the tie-breaker for publications issued in more than one language.
+     */
+    protected function preferGalley(?Galley $current, Galley $candidate, ?string $publicationLocale): Galley
+    {
+        if ($current === null) {
+            return $candidate;
+        }
+
+        if ($publicationLocale === null) {
+            return $current;
+        }
+
+        $language = fn ($locale): string => strtolower(explode('_', str_replace('-', '_', (string) $locale))[0]);
+        $wanted = $language($publicationLocale);
+
+        if ($language($candidate->getData('locale')) === $wanted && $language($current->getData('locale')) !== $wanted) {
+            return $candidate;
+        }
+
+        return $current;
     }
 
     /**
