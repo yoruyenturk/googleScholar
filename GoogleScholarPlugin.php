@@ -290,7 +290,10 @@ class GoogleScholarPlugin extends GenericPlugin
         $pdfGalley = null;
         $htmlGalley = null;
 
-        foreach ((array) $publication->getData('galleys') as $galley) {
+        // Note: getData('galleys') is a LazyCollection, so it must be iterated
+        // directly. Casting it with (array) would expose the collection's own
+        // properties instead of its items.
+        foreach ($publication->getData('galleys') ?? [] as $galley) {
             $submissionFileId = $galley->getData('submissionFileId');
             if (!$submissionFileId || !($submissionFile = Repo::submissionFile()->get($submissionFileId))) {
                 continue;
