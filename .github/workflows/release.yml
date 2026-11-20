@@ -1,0 +1,49 @@
+# Publishes a GitHub release whenever the <release> in version.xml changes on main,
+# or when run manually (Actions > Release > Run workflow).
+# The tag is v<release> (e.g. v1.1.0.4); the attached googleScholar-<release>.tar.gz
+# can be uploaded directly in OJS (Settings > Website > Plugins > Upload a New Plugin).
+# Release notes are taken from .github/release-notes/<release>.md when present.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [version.xml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          release=$(sed -n 's:.*<release>\(.*\)</release>.*:\1:p' version.xml)
+          test -n "$release"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+      - name: Build plugin package
+        run: |
+          git archive --format=tar.gz --prefix=googleScholar/ \
+            -o "googleScholar-${{ steps.version.outputs.release }}.tar.gz" HEAD \
+            -- . ':!.github' ':!.gitignore'
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.version.outputs.release }}
+        run: |
+          tag="v$RELEASE"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists, nothing to do."
+            exit 0
+          fi
+          notes=".github/release-notes/$RELEASE.md"
+          if [ -f "$notes" ]; then notes_args=(--notes-file "$notes"); else notes_args=(--generate-notes); fi
+          gh release create "$tag" "googleScholar-$RELEASE.tar.gz" \
+            --target "$GITHUB_SHA" --title "googleScholar $RELEASE" "${notes_args[@]}"
