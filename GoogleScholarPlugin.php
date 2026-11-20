@@ -3,8 +3,8 @@
 /**
  * @file plugins/generic/googleScholar/GoogleScholarPlugin.php
  *
- * Copyright (c) 2014-2026 Simon Fraser University
- * Copyright (c) 2003-2026 John Willinsky
+ * Copyright (c) 2014-2025 Simon Fraser University
+ * Copyright (c) 2003-2025 John Willinsky
  * Distributed under the GNU GPL v3. For full terms see the file docs/COPYING.
  *
  * @class GoogleScholarPlugin
@@ -19,10 +19,8 @@ namespace APP\plugins\generic\googleScholar;
 use APP\core\Application;
 use APP\core\Request;
 use APP\facades\Repo;
-use APP\publication\Publication;
 use APP\submission\Submission;
 use APP\template\TemplateManager;
-use PKP\context\Context;
 use PKP\core\PKPApplication;
 use PKP\db\DAORegistry;
 use PKP\galley\Galley;
@@ -97,29 +95,27 @@ class GoogleScholarPlugin extends GenericPlugin
         $templateMgr->addHeader('googleScholarRevision', '<meta name="gs_meta_revision" content="1.1"/>');
 
         // Context identification
-        $publication = $submission->getCurrentPublication();
         if ($applicationName == 'ojs2') {
-            // OJS 3.6+ stamps the journal identity onto each publication at publish time
-            // (pkp/pkp-lib#7527); on OJS 3.5 the helpers fall back to the live context.
-            $this->addMetaTag($templateMgr, 'googleScholarJournalTitle', 'citation_journal_title', $this->getPrimaryContextName($publication, $context));
+            $this->addMetaTag($templateMgr, 'googleScholarJournalTitle', 'citation_journal_title', $context->getName($context->getPrimaryLocale()));
 
-            if ($abbreviation = $this->getPrimaryContextAbbreviation($publication, $context)) {
+            if (($abbreviation = $context->getData('abbreviation', $context->getPrimaryLocale())) || ($abbreviation = $context->getData('acronym', $context->getPrimaryLocale()))) {
                 $this->addMetaTag($templateMgr, 'googleScholarJournalAbbrev', 'citation_journal_abbrev', $abbreviation);
             }
 
-            if (($issn = $this->getIssn($publication, $context, 'onlineIssn')) || ($issn = $this->getIssn($publication, $context, 'printIssn')) || ($issn = $context->getData('issn'))) {
+            if (($issn = $context->getData('onlineIssn')) || ($issn = $context->getData('printIssn')) || ($issn = $context->getData('issn'))) {
                 $this->addMetaTag($templateMgr, 'googleScholarIssn', 'citation_issn', $issn);
             }
 
             // Google Scholar lists citation_publisher among the tags it understands for
             // journal articles; OJS previously emitted it for OPS only.
-            $this->addMetaTag($templateMgr, 'googleScholarPublisher', 'citation_publisher', $this->getPublisher($publication, $context));
+            $this->addMetaTag($templateMgr, 'googleScholarPublisher', 'citation_publisher', $context->getData('publisherInstitution'));
         }
 
         if ($applicationName == 'ops') {
-            $this->addMetaTag($templateMgr, 'googleScholarPublisher', 'citation_publisher', $this->getPrimaryContextName($publication, $context));
+            $this->addMetaTag($templateMgr, 'googleScholarPublisher', 'citation_publisher', $context->getName($context->getPrimaryLocale()));
         }
 
+        $publication = $submission->getCurrentPublication();
         $publicationLocale = $publication->getData('locale');
         $submissionBestId = $submission->getBestId();
 
@@ -185,10 +181,6 @@ class GoogleScholarPlugin extends GenericPlugin
                 if ($endPage = $publication->getEndingPage()) {
                     $this->addMetaTag($templateMgr, 'googleScholarEndPage', 'citation_lastpage', $endPage);
                 }
-            } elseif ($articleNumber = $publication->getData('articleNumber')) {
-                // No dedicated tag exists; publishers of article-number journals use citation_firstpage.
-                // (articleNumber is only stored by OJS 3.6+; on 3.5 this branch is never taken.)
-                $this->addMetaTag($templateMgr, 'googleScholarStartPage', 'citation_firstpage', $articleNumber);
             }
         }
 
@@ -246,7 +238,7 @@ class GoogleScholarPlugin extends GenericPlugin
                         $templateMgr,
                         'googleScholarSubject' . $subjectIndex++,
                         'citation_keywords',
-                        $subject,
+                        $this->getVocabEntryName($subject),
                         ['xml:lang' => LocaleConversion::toBcp47($locale)]
                     );
                 }
@@ -262,7 +254,7 @@ class GoogleScholarPlugin extends GenericPlugin
                         $templateMgr,
                         'googleScholarKeyword' . $keywordIndex++,
                         'citation_keywords',
-                        $keyword,
+                        $this->getVocabEntryName($keyword),
                         ['xml:lang' => LocaleConversion::toBcp47($locale)]
                     );
                 }
@@ -390,56 +382,19 @@ class GoogleScholarPlugin extends GenericPlugin
     }
 
     /**
-     * Journal/server name for citation_journal_title / citation_publisher.
+     * Get the display name of a keyword/subject entry.
      *
-     * OJS/OPS 3.6 stamp the context identity onto the publication so that the
-     * name in effect at publication time is used; OJS 3.5 has no such field, so
-     * the live context name in its primary locale is used there.
+     * OJS 3.5 stores each controlled-vocabulary entry as an array of its
+     * settings (['name' => ..., 'identifier' => ..., 'source' => ...]), so the
+     * name must be read by key rather than by position. Plain strings are
+     * accepted as well.
      */
-    protected function getPrimaryContextName(Publication $publication, Context $context): ?string
+    protected function getVocabEntryName(mixed $entry): ?string
     {
-        if (method_exists($publication, 'getPrimaryContextName')) {
-            return $publication->getPrimaryContextName($context);
+        if (is_array($entry)) {
+            return isset($entry['name']) ? (string) $entry['name'] : null;
         }
-        return $context->getName($context->getPrimaryLocale());
-    }
-
-    /**
-     * Journal abbreviation (or acronym) for citation_journal_abbrev, using the
-     * stamped identity on OJS 3.6+ and the live context on OJS 3.5.
-     */
-    protected function getPrimaryContextAbbreviation(Publication $publication, Context $context): ?string
-    {
-        if (method_exists($publication, 'getPrimaryContextAbbreviation')) {
-            return $publication->getPrimaryContextAbbreviation($context);
-        }
-        $primaryLocale = $context->getPrimaryLocale();
-        return $context->getData('abbreviation', $primaryLocale) ?: $context->getData('acronym', $primaryLocale) ?: null;
-    }
-
-    /**
-     * Online or print ISSN ($type is 'onlineIssn' or 'printIssn'), using the
-     * stamped identity on OJS 3.6+ and the live context on OJS 3.5.
-     */
-    protected function getIssn(Publication $publication, Context $context, string $type): ?string
-    {
-        $method = 'get' . ucfirst($type);
-        if (method_exists($publication, $method)) {
-            return $publication->{$method}($context);
-        }
-        return $context->getData($type) ?: null;
-    }
-
-    /**
-     * Publisher for citation_publisher on journals, using the stamped identity on
-     * OJS 3.6+ and the context's publisher institution on OJS 3.5.
-     */
-    protected function getPublisher(Publication $publication, Context $context): ?string
-    {
-        if (method_exists($publication, 'getPublisher')) {
-            return $publication->getPublisher($context);
-        }
-        return $context->getData('publisherInstitution') ?: null;
+        return $entry === null ? null : (string) $entry;
     }
 
     /**
@@ -538,24 +493,20 @@ class GoogleScholarPlugin extends GenericPlugin
      *
      * @return string
      */
-    public function getDisplayName()
+    public function getDisplayName(): string
     {
         return __('plugins.generic.googleScholar.name');
     }
 
     /**
-     * Get the description of this plugin
-     *
-     * @return string
+     * Get the description of this plugin.
      */
-    public function getDescription()
+    public function getDescription(): string
     {
         return __('plugins.generic.googleScholar.description');
     }
 }
 
-// OJS 3.5 still defines PKP_STRICT_MODE and may rely on the legacy global alias;
-// OJS 3.6 removed the constant (pkp/pkp-lib#11583), so it must not be referenced unguarded.
-if (defined('PKP_STRICT_MODE') && !PKP_STRICT_MODE) {
+if (!PKP_STRICT_MODE) {
     class_alias('\APP\plugins\generic\googleScholar\GoogleScholarPlugin', '\GoogleScholarPlugin');
 }
