@@ -24,9 +24,9 @@ use APP\template\TemplateManager;
 use PKP\core\PKPApplication;
 use PKP\db\DAORegistry;
 use PKP\galley\Galley;
+use PKP\i18n\LocaleConversion;
 use PKP\plugins\GenericPlugin;
 use PKP\plugins\Hook;
-use PKP\i18n\LocaleConversion;
 use PKP\submission\GenreDAO;
 
 class GoogleScholarPlugin extends GenericPlugin
@@ -49,30 +49,25 @@ class GoogleScholarPlugin extends GenericPlugin
     }
 
     /**
-     * Get the name of the settings file to be installed on new context
-     * creation.
-     *
-     * @return string
+     * Get the name of the settings file to be installed on new context creation.
      */
-    public function getContextSpecificPluginSettingsFile()
+    public function getContextSpecificPluginSettingsFile(): string
     {
         return $this->getPluginPath() . '/settings.xml';
     }
 
     /**
-     * Inject Google Scholar metadata into submission landing page view
+     * Inject Google Scholar metadata into the submission landing page view.
      *
      * @param string $hookName
      * @param array $args
-     *
-     * @return boolean
      */
-    public function submissionView($hookName, $args)
+    public function submissionView($hookName, $args): bool
     {
         $application = Application::get();
         $applicationName = $application->getName();
 
-        /** @var Request */
+        /** @var Request $request */
         $request = $args[0];
         $issue = null;
 
@@ -122,7 +117,7 @@ class GoogleScholarPlugin extends GenericPlugin
 
         $publication = $submission->getCurrentPublication();
         $publicationLocale = $publication->getData('locale');
-        $submissionBestId = $publication->getData('urlPath') ?? $submission->getId();
+        $submissionBestId = $submission->getBestId();
 
         // Contributors
         $authors = $publication->getData('authors');
@@ -243,7 +238,7 @@ class GoogleScholarPlugin extends GenericPlugin
                         $templateMgr,
                         'googleScholarSubject' . $subjectIndex++,
                         'citation_keywords',
-                        $subject,
+                        $this->getVocabEntryName($subject),
                         ['xml:lang' => LocaleConversion::toBcp47($locale)]
                     );
                 }
@@ -259,7 +254,7 @@ class GoogleScholarPlugin extends GenericPlugin
                         $templateMgr,
                         'googleScholarKeyword' . $keywordIndex++,
                         'citation_keywords',
-                        $keyword,
+                        $this->getVocabEntryName($keyword),
                         ['xml:lang' => LocaleConversion::toBcp47($locale)]
                     );
                 }
@@ -387,6 +382,22 @@ class GoogleScholarPlugin extends GenericPlugin
     }
 
     /**
+     * Get the display name of a keyword/subject entry.
+     *
+     * OJS 3.5 stores each controlled-vocabulary entry as an array of its
+     * settings (['name' => ..., 'identifier' => ..., 'source' => ...]), so the
+     * name must be read by key rather than by position. Plain strings are
+     * accepted as well.
+     */
+    protected function getVocabEntryName(mixed $entry): ?string
+    {
+        if (is_array($entry)) {
+            return isset($entry['name']) ? (string) $entry['name'] : null;
+        }
+        return $entry === null ? null : (string) $entry;
+    }
+
+    /**
      * Decide which of two galleys of the same type should be advertised to
      * Google Scholar.
      *
@@ -482,17 +493,15 @@ class GoogleScholarPlugin extends GenericPlugin
      *
      * @return string
      */
-    public function getDisplayName()
+    public function getDisplayName(): string
     {
         return __('plugins.generic.googleScholar.name');
     }
 
     /**
-     * Get the description of this plugin
-     *
-     * @return string
+     * Get the description of this plugin.
      */
-    public function getDescription()
+    public function getDescription(): string
     {
         return __('plugins.generic.googleScholar.description');
     }
